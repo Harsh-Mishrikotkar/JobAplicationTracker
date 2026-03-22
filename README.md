@@ -47,8 +47,16 @@ storage.
 
 ## Project Structure
 
-job-tracker/ │ ├── run.py ├── config/ ├── backend/ ├── processing/ ├──
-storage/ ├── dashboard/ ├── tests/ └── data/
+job-tracker/
+│
+├── run.py
+├── config/
+├── backend/
+├── processing/
+├──storage/
+├── dashboard/
+├── tests/
+└── data/
 
 ### Key Directories
 
