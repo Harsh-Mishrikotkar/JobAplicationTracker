@@ -14,7 +14,7 @@ class GreenhouseFetcher(BaseFetcher):
 
     Each company on Greenhouse has a unique board slug, e.g.:
       - Stripe    → "stripe"
-      - Notion    → "notion"
+      - Robinhood    → "robinhood"
       - Airbnb    → "airbnb"
 
     The API has two levels:
@@ -155,7 +155,7 @@ if __name__ == "__main__":
     import json
 
     # Replace with any real Greenhouse company slug to test
-    TEST_SLUG = "stripe"
+    TEST_SLUG = "robinhood"
 
     print(f"\n{'='*60}")
     print(f" Greenhouse raw fetch — company: '{TEST_SLUG}'")

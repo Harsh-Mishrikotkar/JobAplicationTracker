@@ -1,0 +1,45 @@
+# sources.yaml
+# Defines which companies to track and from which ATS source.
+#
+# Structure:
+#   source_name:
+#     company_slug:
+#       enabled: true | false   (default: true if omitted)
+#
+# Adding a company   → add a slug under the right source
+# Disabling one      → set enabled: false (keeps history, stops future fetches)
+# Removing one       → delete the line (history stays in DB, no new fetches)
+#
+# Greenhouse slugs are the board identifier in the URL:
+#   https://boards.greenhouse.io/{slug}
+#
+# Lever slugs are the job site identifier:
+#   https://jobs.lever.co/{slug}
+
+greenhouse:
+  stripe:
+  robinhood:
+  airbnb:
+  coinbase:
+  brex:
+  databricks:
+  figma:
+  airtable:
+  anthropic:
+  duolingo:
+  reddit:
+  dropbox:
+  pinterest:
+  squarespace:
+  affirm:
+  chime:
+  sofi:
+  
+#lever:
+#  netflix:
+#  plaid:
+#  affirm:
+
+# workable:
+#   revolut:
+#   remote:

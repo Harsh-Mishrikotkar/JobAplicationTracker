@@ -283,7 +283,7 @@ if __name__ == "__main__":
     # Edit this list to test different companies
     TEST_COMPANIES = [
         "stripe",
-        "notion",
+        "robinhood",
     ]
 
     sources_config = [
