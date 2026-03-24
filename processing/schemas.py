@@ -1,65 +1,88 @@
-from pydantic import BaseModel, HttpUrl, field_validator
+from enum import Enum
+from pydantic import BaseModel, field_validator
 from datetime import datetime
 from typing import Optional
-from enum import Enum
 
 class Source(str, Enum):
-    greenhouse = "greenhouse"
-    lever = "lever"
-    workable = "workable"
+    greenhouse     = "greenhouse"
+    lever          = "lever"
+    workable       = "workable"
     smartrecruiters = "smartrecruiters"
-    ashby = "ashby"
-    bamboohr = "bamboohr"
+    ashby          = "ashby"
+    bamboohr       = "bamboohr"
 
 class JobPosting(BaseModel):
     """
     Canonical job posting model for the entire pipeline.
 
-    This is the single source of truth for what a job looks like
-    after normalization. Every field here was chosen based on what
-    Greenhouse actually returns — not assumptions.
+    Produced by the normalizer, validated by Pydantic, scored by
+    the scorer, and persisted by the repository. Every layer
+    downstream of the normalizer works with this type only.
 
     Field origins (Greenhouse):
-        id            ← constructed:  "greenhouse:{company}:{job.id}"
-        source        ← hardcoded:    "greenhouse"
-        company       ← company_name
-        title         ← title
-        location      ← location.name          (nested object)
-        department    ← departments[0].name     (first item or None)
-        office        ← offices[0].name         (first item or None)
-        url           ← absolute_url
-        posted_at     ← first_published         (tz-aware datetime string)
-        updated_at    ← updated_at              (tz-aware datetime string)
-        fetched_at    ← set by normalizer       (always present, never from source)
-        description   ← content                 (HTML-encoded, normalizer strips tags)
+        id              ← constructed:  "greenhouse:{company}:{job.id}"
+        source          ← Source enum
+        company         ← slug passed into fetcher (not from API)
+        title           ← title
+        location        ← location.name          (nested object)
+        department      ← departments[0].name     (first item or None)
+        office          ← offices[0].name         (first item or None)
+        url             ← absolute_url
+        posted_at       ← first_published         (tz-aware datetime string)
+        updated_at      ← updated_at              (tz-aware datetime string)
+        fetched_at      ← set by normalizer       (always present, never from source)
+        description     ← content                 (HTML-encoded, normalizer strips tags)
+
+    Scoring fields (set by scorer.py, default 0/None until scored):
+        score           ← integer relevance score
+        score_tier      ← "high" | "medium" | "low" | "rejected"
+        score_breakdown ← human-readable scoring log, newline-separated
     """
 
     # --- Identity ---
-    id: str                         # "greenhouse:stripe:7532733"
-    source: Source                     # "greenhouse", "lever", etc.
+    id:      str
+    source:  Source
     company: str
 
     # --- Job details ---
-    title: str
-    location: Optional[str] = None
+    title:      str
+    location:   Optional[str] = None
     department: Optional[str] = None
-    office: Optional[str] = None
+    office:     Optional[str] = None
 
-    # --- Links ---
-    url: HttpUrl                        # kept as str — HttpUrl is strict about trailing slashes
+    # --- Link ---
+    url: str
 
     # --- Timestamps ---
-    posted_at: Optional[datetime] = None
+    posted_at:  Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    fetched_at: datetime            # always set by normalizer, never from source
+    fetched_at: datetime            # always set by normalizer
 
     # --- Content ---
-    description: Optional[str] = None  # plain text after HTML stripping
+    description: Optional[str] = None
+
+    # --- Scoring (set by scorer.py after filtering) ---
+    score:           int           = 0
+    score_tier:      Optional[str] = None   # "high" | "medium" | "low" | "rejected"
+    score_breakdown: Optional[str] = None   # newline-separated breakdown log
+
+    # ------------------------------------------------------------------
+    # Validators
+    # ------------------------------------------------------------------
 
     @field_validator("id")
     @classmethod
     def id_must_be_composite(cls, v: str) -> str:
-        source, company, job_id = v.split(":")
+        parts = v.split(":")
+        if len(parts) != 3:
+            raise ValueError(
+                f"Job ID must be 'source:company:job_id', got: '{v}'"
+            )
+        return v
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     def is_newer_than(self, other: "JobPosting") -> bool:
         """Returns True if this posting was updated more recently than other."""
@@ -70,19 +93,22 @@ class JobPosting(BaseModel):
     def to_db_row(self) -> dict:
         """
         Converts to a flat dict ready for SQLite insertion.
-        Datetimes become ISO strings. Nones stay None.
+        Datetimes → ISO strings. Source enum → string value. Nones stay None.
         """
         return {
-            "id":          self.id,
-            "source":      self.source.value,
-            "company":     self.company,
-            "title":       self.title,
-            "location":    self.location,
-            "department":  self.department,
-            "office":      self.office,
-            "url":         str(self.url),
-            "posted_at":   self.posted_at.isoformat() if self.posted_at else None,
-            "updated_at":  self.updated_at.isoformat() if self.updated_at else None,
-            "fetched_at":  self.fetched_at.isoformat(),
-            "description": self.description,
+            "id":              self.id,
+            "source":          self.source.value,
+            "company":         self.company,
+            "title":           self.title,
+            "location":        self.location,
+            "department":      self.department,
+            "office":          self.office,
+            "url":             self.url,
+            "posted_at":       self.posted_at.isoformat()  if self.posted_at  else None,
+            "updated_at":      self.updated_at.isoformat() if self.updated_at else None,
+            "fetched_at":      self.fetched_at.isoformat(),
+            "description":     self.description,
+            "score":           self.score,
+            "score_tier":      self.score_tier,
+            "score_breakdown": self.score_breakdown,
         }

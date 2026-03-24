@@ -1,0 +1,167 @@
+# filters.yaml
+# Two responsibilities:
+#   1. HARD FILTERS  — binary pass/fail before scoring (filter_engine.py)
+#   2. SCORING WEIGHTS — used by scorer.py to rank surviving jobs
+#
+# All keyword matching is case-insensitive.
+# No quotes needed around keys — plain YAML strings work fine.
+
+# ------------------------------------------------------------------
+# HARD FILTERS (filter_engine.py)
+# A job must pass ALL of these to reach the scorer.
+# ------------------------------------------------------------------
+
+# At least one of these must appear as a whole word in the title.
+hard_title_include:
+  - analyst
+  - quantitative
+  - quant
+  - research
+  - actuarial
+  - underwriting
+  - pricing
+  - intern
+  - internship
+
+# Any of these as a whole word in the title → immediate rejection.
+hard_seniority_exclude:
+  - senior
+  - sr
+  - lead
+  - principal
+  - staff
+  - director
+  - vice president
+  - vp
+  - manager
+  - head of
+  - chief
+  - president
+  - partner
+  - executive
+
+# Any of these in the title → immediate rejection (unrelated domains).
+hard_domain_exclude:
+  - sales
+  - marketing
+  - recruiter
+  - recruiting
+  - talent
+  - legal
+  - counsel
+  - devops
+  - infrastructure
+  - site reliability
+  - human resources
+  - office manager
+  - administrative
+  - communications
+  - content
+  - brand
+  - product designer
+
+# Location hard filter — USA and India only.
+# Case-insensitive substring match against job.location.
+# Jobs with no location are rejected when this list is non-empty.
+hard_location_include:
+  - united states
+  - usa
+  - remote
+  - new york
+  - chicago
+  - san francisco
+  - boston
+  - austin
+  - seattle
+  - india
+  - bangalore
+  - mumbai
+  - hyderabad
+  - pune
+  - chennai
+  - delhi
+
+# ------------------------------------------------------------------
+# SCORING WEIGHTS (scorer.py)
+# Applied only to jobs that passed all hard filters above.
+# Phrases are checked before single keywords (longer = more specific).
+# ------------------------------------------------------------------
+
+# Layer 1 — Role Relevance (dominant signal)
+role_weights:
+  data analyst:          5
+  financial analyst:     5
+  business analyst:      4
+  research analyst:      5
+  risk analyst:          5
+  quantitative analyst:  6
+  investment analyst:    5
+  portfolio analyst:     5
+  pricing analyst:       4
+  reporting analyst:     4
+  quant researcher:      5
+  quantitative:          4
+  quant:                 3
+  actuarial:             4
+  analyst:               2
+  research:              2
+  intern:                2
+  internship:            2
+
+# Layer 2 — Seniority Penalties (applied even after hard filters)
+seniority_penalties:
+  senior:          -6
+  sr.:             -6
+  lead:            -5
+  manager:         -5
+  director:        -7
+  principal:       -6
+  vice president:  -8
+  vp:              -8
+  head of:         -7
+  chief:           -8
+
+# Layer 3 — Skill Alignment (signal boosters)
+skill_weights:
+  sql:              2
+  python:           2
+  excel:            1
+  modeling:         2
+  modelling:        2
+  forecasting:      2
+  risk:             2
+  valuation:        2
+  portfolio:        2
+  statistical:      2
+  statistics:       2
+  machine learning: 2
+  data science:     2
+  reporting:        1
+  tableau:          1
+  power bi:         1
+
+# Layer 4 — Context Bonuses (tie-breakers)
+context_bonuses:
+  new grad:      3
+  entry level:   3
+  entry-level:   3
+  0-2 years:     3
+  0-1 years:     3
+  junior:        2
+  associate:     1
+
+# Location bonuses — on top of hard location filter
+location_bonuses:
+  chicago:    2
+  remote:     1
+  new york:   1
+  india:      1
+
+# ------------------------------------------------------------------
+# SCORE THRESHOLDS (scorer.py)
+# ------------------------------------------------------------------
+thresholds:
+  minimum:  5
+  low:      5
+  medium:   8
+  high:     11
