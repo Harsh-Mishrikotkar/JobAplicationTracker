@@ -5,7 +5,6 @@ from processing.schemas import JobPosting, Source
 from processing.normalizer import normalize
 from processing.filter_engine import filter_jobs
 from processing.scorer import score_jobs
-from processing.deduplicator import deduplicate
 from storage.database import ensure_schema_exists
 from storage.repository import save_jobs
 
@@ -20,15 +19,22 @@ logger = logging.getLogger(__name__)
 class PipelineResult:
     """
     Summary of a single pipeline run for one company.
-    Returned by run_pipeline() so run.py and the dashboard
-    can display meaningful stats without re-querying the DB.
+
+    Why dedup_* fields are gone:
+        The deduplicator was filtering duplicates in Python, then
+        the UPSERT was handling them in the DB anyway — double work.
+        Worse: because we only passed new_jobs to save_jobs(), the
+        UPSERT never ran for existing jobs, so scores never updated.
+
+        Now all scored jobs go to save_jobs(). The DB handles
+        insert vs update atomically. SaveResult tells us which happened.
     """
     source:          str
     company:         str
 
     raw_fetched:     int = 0
     normalized:      int = 0
-    norm_skipped:    int = 0    # missing title/url
+    norm_skipped:    int = 0
 
     filter_passed:   int = 0
     filter_rejected: int = 0
@@ -36,21 +42,19 @@ class PipelineResult:
     score_kept:      int = 0
     score_rejected:  int = 0
 
-    dedup_new:       int = 0
-    dedup_skipped:   int = 0
-
     db_inserted:     int = 0
-    db_skipped:      int = 0
+    db_updated:      int = 0
+    db_failed:       int = 0
 
     errors:          list[str] = field(default_factory=list)
 
     def log_summary(self) -> None:
         logger.info(
-            "[%s:%s] raw=%d → normalized=%d → filtered=%d → scored=%d → new=%d → saved=%d",
+            "[%s:%s] raw=%d → normalized=%d → filtered=%d → scored=%d → inserted=%d, updated=%d",
             self.source, self.company,
             self.raw_fetched, self.normalized,
             self.filter_passed, self.score_kept,
-            self.dedup_new, self.db_inserted,
+            self.db_inserted, self.db_updated,
         )
 
     def print_summary(self) -> None:
@@ -61,8 +65,10 @@ class PipelineResult:
         print(f"  Normalized           {self.normalized:>6}   (skipped: {self.norm_skipped})")
         print(f"  Passed hard filter   {self.filter_passed:>6}   (rejected: {self.filter_rejected})")
         print(f"  Passed scorer        {self.score_kept:>6}   (below threshold: {self.score_rejected})")
-        print(f"  New (not in DB)      {self.dedup_new:>6}   (already existed: {self.dedup_skipped})")
-        print(f"  Saved to DB          {self.db_inserted:>6}")
+        print(f"  Inserted (new)       {self.db_inserted:>6}")
+        print(f"  Updated (existing)   {self.db_updated:>6}")
+        if self.db_failed:
+            print(f"  Failed               {self.db_failed:>6}  ← check logs")
         if self.errors:
             print(f"\n  Errors ({len(self.errors)}):")
             for e in self.errors:
@@ -83,21 +89,15 @@ def run_pipeline(
     Runs the full pipeline for one company from one source.
 
     Steps:
-        1. FETCH       — pull raw job dicts from the source API
-        2. NORMALIZE   — convert raw dicts → JobPosting via Pydantic
-        3. FILTER      — hard binary filters (title, seniority, domain, location)
-        4. SCORE       — rank surviving jobs; drop below-threshold
-        5. DEDUPLICATE — remove jobs already in the DB
-        6. SAVE        — persist new jobs with their scores
+        1. FETCH     — pull raw job dicts from the source API
+        2. NORMALIZE — convert raw dicts → JobPosting via Pydantic
+        3. FILTER    — hard binary filters (title, seniority, domain, location)
+        4. SCORE     — rank surviving jobs; drop below-threshold
+        5. SAVE      — UPSERT all scored jobs (insert new, update existing scores)
 
-    Args:
-        fetcher:  An initialized fetcher instance (e.g. GreenhouseFetcher).
-                  Must implement .fetch() → list[dict].
-        source:   Source enum value matching the fetcher.
-        company:  The company slug, e.g. "stripe".
-
-    Returns:
-        PipelineResult with per-step counts for reporting.
+    Deduplication is handled entirely by the DB via UPSERT.
+    There is no separate dedup step — that was redundant and was
+    preventing score updates from reaching existing rows.
     """
     result = PipelineResult(source=source.value, company=company)
 
@@ -161,9 +161,9 @@ def run_pipeline(
     # ------------------------------------------------------------------
     logger.info("[%s:%s] Step 4 — Scoring...", source.value, company)
 
-    kept, below_threshold  = score_jobs(passed)
-    result.score_kept      = len(kept)
-    result.score_rejected  = len(below_threshold)
+    kept, below_threshold = score_jobs(passed)
+    result.score_kept     = len(kept)
+    result.score_rejected = len(below_threshold)
     logger.info(
         "[%s:%s] Scoring — kept: %d, below threshold: %d.",
         source.value, company, result.score_kept, result.score_rejected,
@@ -172,8 +172,7 @@ def run_pipeline(
     if not kept:
         return result
 
-    # Attach scores back onto each JobPosting before dedup/save.
-    # score_jobs returns (job, ScoreResult) tuples — merge into the model.
+    # Attach scores onto each JobPosting before saving
     scored_jobs: list[JobPosting] = []
     for job, score_result in kept:
         job.score           = score_result.score
@@ -182,30 +181,19 @@ def run_pipeline(
         scored_jobs.append(job)
 
     # ------------------------------------------------------------------
-    # Step 5 — DEDUPLICATE
+    # Step 5 — SAVE (UPSERT — insert new, update scores on existing)
     # ------------------------------------------------------------------
-    logger.info("[%s:%s] Step 5 — Deduplicating...", source.value, company)
+    logger.info("[%s:%s] Step 5 — Saving to DB...", source.value, company)
 
-    new_jobs, dupes        = deduplicate(scored_jobs)
-    result.dedup_new       = len(new_jobs)
-    result.dedup_skipped   = len(dupes)
+    save_result        = save_jobs(scored_jobs)
+    result.db_inserted = save_result.inserted
+    result.db_updated  = save_result.updated
+    result.db_failed   = save_result.failed
     logger.info(
-        "[%s:%s] Dedup — new: %d, already in DB: %d.",
-        source.value, company, result.dedup_new, result.dedup_skipped,
+        "[%s:%s] Save complete — inserted: %d, updated: %d, failed: %d.",
+        source.value, company,
+        save_result.inserted, save_result.updated, save_result.failed,
     )
-
-    if not new_jobs:
-        return result
-
-    # ------------------------------------------------------------------
-    # Step 6 — SAVE
-    # ------------------------------------------------------------------
-    logger.info("[%s:%s] Step 6 — Saving to DB...", source.value, company)
-
-    inserted, skipped    = save_jobs(new_jobs)
-    result.db_inserted   = inserted
-    result.db_skipped    = skipped
-    logger.info("[%s:%s] Saved %d new jobs.", source.value, company, inserted)
 
     return result
 
@@ -217,20 +205,7 @@ def run_pipeline(
 def run_all(sources_config: list[dict]) -> list[PipelineResult]:
     """
     Runs the pipeline for every company in sources_config.
-
-    Called by run.py with the full list built from sources.yaml.
     Ensures the DB schema exists before the first fetch.
-
-    Args:
-        sources_config: List of dicts, each with:
-            {
-                "fetcher":  <initialized fetcher instance>,
-                "source":   Source.greenhouse,
-                "company":  "stripe",
-            }
-
-    Returns:
-        List of PipelineResult, one per company.
     """
     ensure_schema_exists()
 
@@ -249,19 +224,21 @@ def run_all(sources_config: list[dict]) -> list[PipelineResult]:
 
 
 def _print_run_totals(results: list[PipelineResult]) -> None:
-    """Single combined summary line across all companies after a full run."""
     total_fetched  = sum(r.raw_fetched   for r in results)
-    total_saved    = sum(r.db_inserted   for r in results)
-    total_dupes    = sum(r.dedup_skipped for r in results)
     total_filtered = sum(r.filter_rejected + r.score_rejected for r in results)
+    total_inserted = sum(r.db_inserted   for r in results)
+    total_updated  = sum(r.db_updated    for r in results)
+    total_failed   = sum(r.db_failed     for r in results)
 
     print(f"\n{'='*55}")
     print(f"  RUN COMPLETE — {len(results)} source(s) processed")
     print(f"{'='*55}")
     print(f"  Total fetched        {total_fetched:>6}")
     print(f"  Total filtered out   {total_filtered:>6}")
-    print(f"  Total duplicates     {total_dupes:>6}")
-    print(f"  Total saved (new)    {total_saved:>6}")
+    print(f"  Total inserted (new) {total_inserted:>6}")
+    print(f"  Total updated        {total_updated:>6}")
+    if total_failed:
+        print(f"  Total failed         {total_failed:>6}  ← check logs")
     print(f"{'='*55}\n")
 
 
@@ -280,10 +257,9 @@ if __name__ == "__main__":
 
     from backend.fetchers.greenhouse import GreenhouseFetcher
 
-    # Edit this list to test different companies
     TEST_COMPANIES = [
         "stripe",
-        "robinhood",
+        "notion",
     ]
 
     sources_config = [
